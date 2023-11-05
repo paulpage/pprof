@@ -71,6 +71,7 @@ pub struct Anchor {
     elapsed: u64,
     children_elapsed: u64,
     self_children_elapsed: u64,
+    bytes: usize,
 }
 
 impl Anchor {
@@ -81,6 +82,7 @@ impl Anchor {
             elapsed: 0,
             children_elapsed: 0,
             self_children_elapsed: 0,
+            bytes: 0,
         }
     }
 
@@ -156,26 +158,40 @@ impl Profiler {
 
     pub fn print(&mut self) {
         let total_duration = self.start.elapsed();
-        let freq = get_duration_freq() / 1000.0;
+        let freq = get_duration_freq();
         println!("--- PProf Results ---");
         println!("Total time: {:?}", total_duration);
         for anchor in &self.anchors {
             let elapsed = (anchor.elapsed - anchor.self_children_elapsed) as f64 / freq;
             let self_elapsed = (anchor.elapsed - anchor.children_elapsed) as f64 / freq;
             let elapsed_percentage =
-                elapsed as f64 / (total_duration.as_nanos() as f64 / 1000_000.0) * 100.0;
+                elapsed as f64 / (total_duration.as_nanos() as f64 / 1_000_000.0) * 100.0;
             let self_elapsed_percentage =
-                self_elapsed as f64 / (total_duration.as_nanos() as f64 / 1000_000.0) * 100.0;
+                self_elapsed as f64 / (total_duration.as_nanos() as f64 / 1_000_000.0) * 100.0;
+
+            let throughput_str = if anchor.bytes != 0 {
+                let mb = (1024 * 1024) as f64;
+                let gb = (1024 * 1024 * 1024) as f64;
+                format!(" throughput={:.4} MB at {:.4} GB/s", anchor.bytes as f64 / mb, anchor.bytes as f64 / gb / elapsed)
+            } else {
+                String::new()
+            };
+
             println!(
-                "{}[{}] - total={:.4}ms ({:.4}%) self={:.4}ms ({:.4}%)",
+                "{}[{}] - total={:.4}ms ({:.4}%) self={:.4}ms ({:.4}%){}",
                 anchor.name,
                 anchor.calls,
-                elapsed,
+                elapsed * 1000.0,
                 elapsed_percentage,
-                self_elapsed,
-                self_elapsed_percentage
+                self_elapsed * 1000.0,
+                self_elapsed_percentage,
+                throughput_str,
             );
         }
+    }
+
+    pub fn add_bytes(&mut self, anchor_id: usize, bytes: usize) {
+        self.anchors[anchor_id].bytes += bytes;
     }
 }
 
@@ -197,11 +213,17 @@ macro_rules! block {
         let id = pprof::PROFILER.lock().unwrap().get_anchor_id(&name);
         pprof::Block::new(id)
     }};
-    ($arg:expr) => {{
-        let name = format!("{}[{}]", pprof::fn_name!(), $arg);
+    ($name:expr) => {{
+        let name = format!("{}[{}]", pprof::fn_name!(), $name);
         let id = pprof::PROFILER.lock().unwrap().get_anchor_id(&name);
         pprof::Block::new(id)
     }};
+    ($name:expr, $bytes:expr) => {{
+        let name = format!("{}[{}]", pprof::fn_name!(), $name);
+        let id = pprof::PROFILER.lock().unwrap().get_anchor_id(&name);
+        pprof::PROFILER.lock().unwrap().add_bytes(id, $bytes);
+        pprof::Block::new(id)
+    }}
 }
 
 pub fn init() {
