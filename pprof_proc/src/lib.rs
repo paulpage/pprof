@@ -8,6 +8,6 @@ pub fn time(item: TokenStream) -> TokenStream {
 
 #[cfg(not(feature = "profile"))]
 #[proc_macro]
-pub fn time(item: TokenStream) -> TokenStream {
+pub fn time(_item: TokenStream) -> TokenStream {
     TokenStream::default()
 }

@@ -1,18 +1,19 @@
 use lazy_static::lazy_static;
 pub use pprof_proc::time;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 lazy_static! {
     pub static ref PROFILER: Mutex<Profiler> = Mutex::new(Profiler::new());
 }
 
-#[must_use]
+#[cfg(not(feature = "rdtsc"))]
 pub struct Block {
     anchor_id: usize,
     start: Instant,
 }
 
+#[cfg(not(feature = "rdtsc"))]
 impl Block {
     pub fn new(anchor_id: usize) -> Self {
         Self {
@@ -20,39 +21,40 @@ impl Block {
             start: Instant::now(),
         }
     }
+
+    pub fn elapsed(&self) -> u64 {
+        self.start.elapsed().as_nanos() as u64
+    }
 }
 
-#[derive(Default)]
-pub struct Anchor {
-    name: String,
-    calls: usize,
-    elapsed: Duration,
-    children_elapsed: Duration,
-    self_children_elapsed: Duration,
+#[cfg(feature = "rdtsc")]
+macro_rules! get_cpu_timer {
+    () => {{
+        unsafe {
+            core::arch::x86_64::_rdtsc()
+        }
+    }}
 }
 
-impl Anchor {
-    pub fn new(name: &str) -> Self {
+#[cfg(feature = "rdtsc")]
+pub struct Block {
+    anchor_id: usize,
+    start: u64,
+}
+
+#[cfg(feature = "rdtsc")]
+impl Block {
+    pub fn new(anchor_id: usize) -> Self {
+        let start = get_cpu_timer!();
         Self {
-            name: name.to_string(),
-            calls: 0,
-            elapsed: Duration::default(),
-            children_elapsed: Duration::default(),
-            self_children_elapsed: Duration::default(),
+            anchor_id,
+            start,
         }
     }
 
-    pub fn update(&mut self, duration: Duration) {
-        self.elapsed += duration;
-        self.calls += 1;
-    }
-
-    pub fn update_from_child(&mut self, duration: Duration) {
-        self.children_elapsed += duration;
-    }
-
-    pub fn update_from_self_child(&mut self, duration: Duration) {
-        self.self_children_elapsed += duration;
+    pub fn elapsed(&self) -> u64 {
+        let end = get_cpu_timer!();
+        end - self.start
     }
 }
 
@@ -62,10 +64,57 @@ impl Drop for Block {
     }
 }
 
+#[derive(Default)]
+pub struct Anchor {
+    name: String,
+    calls: usize,
+    elapsed: u64,
+    children_elapsed: u64,
+    self_children_elapsed: u64,
+}
+
+impl Anchor {
+    pub fn new(name: &str) -> Self {
+        Self {
+            name: name.to_string(),
+            calls: 0,
+            elapsed: 0,
+            children_elapsed: 0,
+            self_children_elapsed: 0,
+        }
+    }
+
+    pub fn update(&mut self, duration: u64) {
+        self.elapsed += duration;
+        self.calls += 1;
+    }
+
+    pub fn update_from_child(&mut self, duration: u64) {
+        self.children_elapsed += duration;
+    }
+
+    pub fn update_from_self_child(&mut self, duration: u64) {
+        self.self_children_elapsed += duration;
+    }
+}
+
 pub struct Profiler {
     anchor_id_stack: Vec<usize>,
     anchors: Vec<Anchor>,
     start: Instant,
+}
+
+#[cfg(not(feature = "rdtsc"))]
+fn get_duration_freq() -> f64 {
+    1000_000_000.0
+}
+
+#[cfg(feature = "rdtsc")]
+fn get_duration_freq() -> f64 {
+    let start = get_cpu_timer!();
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let end = get_cpu_timer!();
+    (end - start) as f64 * 10.0
 }
 
 impl Profiler {
@@ -90,7 +139,7 @@ impl Profiler {
 
     pub fn add_block(&mut self, block: &Block) {
         self.anchor_id_stack.pop();
-        let duration = block.start.elapsed();
+        let duration = block.elapsed();
         self.anchors[block.anchor_id].update(duration);
         let mut updated_children = Vec::new();
         for a in &self.anchor_id_stack {
@@ -107,17 +156,18 @@ impl Profiler {
 
     pub fn print(&mut self) {
         let total_duration = self.start.elapsed();
+        let freq = get_duration_freq() / 1000.0;
         println!("--- PProf Results ---");
         println!("Total time: {:?}", total_duration);
         for anchor in &self.anchors {
-            let elapsed = anchor.elapsed - anchor.self_children_elapsed;
-            let self_elapsed = anchor.elapsed - anchor.children_elapsed;
+            let elapsed = (anchor.elapsed - anchor.self_children_elapsed) as f64 / freq;
+            let self_elapsed = (anchor.elapsed - anchor.children_elapsed) as f64 / freq;
             let elapsed_percentage =
-                elapsed.as_nanos() as f64 / total_duration.as_nanos() as f64 * 100.0;
+                elapsed as f64 / (total_duration.as_nanos() as f64 / 1000_000.0) * 100.0;
             let self_elapsed_percentage =
-                self_elapsed.as_nanos() as f64 / total_duration.as_nanos() as f64 * 100.0;
+                self_elapsed as f64 / (total_duration.as_nanos() as f64 / 1000_000.0) * 100.0;
             println!(
-                "{}[{}] - total={:?} ({:.4}%) self={:?} ({:.4}%)",
+                "{}[{}] - total={:.4}ms ({:.4}%) self={:.4}ms ({:.4}%)",
                 anchor.name,
                 anchor.calls,
                 elapsed,
