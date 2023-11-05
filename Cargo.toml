@@ -5,6 +5,9 @@ edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+profile = ["pprof_proc/profile"]
+
 [dependencies]
 pprof_proc = { path = "./pprof_proc" }
 lazy_static = "1.4.0"
